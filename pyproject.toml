@@ -1,0 +1,32 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "standardized-master-equation-framework"
+version = "0.1.0"
+description = "Generic master-equation compilation framework"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+
+authors = [
+  { name = "Simon Sekavčnik" }
+]
+
+dependencies = [
+  "numpy>=1.24",
+  "typing-extensions>=4.7",
+  "pint>=0.22",
+]
+
+[project.optional-dependencies]
+reporting = ["rich>=13"]
+qutip = ["qutip>=4.7"]
+photonweave = []  # add later
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.setuptools.packages.find]
+where = ["src"]
