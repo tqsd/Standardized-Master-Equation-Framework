@@ -6,6 +6,7 @@ from typing import Any, Dict, Optional, Sequence, Tuple
 import numpy as np
 
 from smef.core.sim.types import CompiledTermDense, MEProblemDense
+from smef.core.ir.coeffs import eval_coeff_any
 
 
 @dataclass(frozen=True)
@@ -24,19 +25,6 @@ def _prod_int(xs: Sequence[int]) -> int:
     for x in xs:
         out *= int(x)
     return out
-
-
-def _eval_coeff_maybe(coeff: Any, tlist: np.ndarray) -> np.ndarray:
-    if coeff is None:
-        out = np.empty(len(tlist), dtype=complex)
-        out[:] = 1.0 + 0.0j
-        return out
-    if hasattr(coeff, "eval"):
-        y = coeff.eval(tlist)
-    else:
-        y = coeff(tlist)
-    y = np.asarray(y, dtype=complex).reshape(len(tlist))
-    return y
 
 
 def _top_abs_entries(
@@ -127,7 +115,9 @@ def audit_problem_dense(
                 item["op_is_hermitian"] = bool(herm_err <= opt.hermitian_atol)
 
             if opt.coeff_stats:
-                coeff = _eval_coeff_maybe(term.coeff, tlist)
+                coeff = eval_coeff_any(
+                    term.coeff, tlist, time_unit_s=problem.time_unit_s
+                )
                 item["coeff_min_abs"] = float(np.min(np.abs(coeff)))
                 item["coeff_max_abs"] = float(np.max(np.abs(coeff)))
                 peak_i = int(np.argmax(np.abs(coeff))) if len(coeff) else 0

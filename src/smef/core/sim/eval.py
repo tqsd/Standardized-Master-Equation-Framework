@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Callable
 
 import numpy as np
 
@@ -12,26 +12,26 @@ def eval_coeff(
 ) -> np.ndarray:
     c = term.coeff
     if c is None:
-        return np.ones(len(tlist), dtype=complex)
+        out = np.empty(len(tlist), dtype=complex)
+        out[:] = 1.0 + 0.0j
+        return out
+
     if hasattr(c, "eval"):
         try:
-            return c.eval(tlist, time_unit_s)  # CallableCoeffUnits
+            y = c.eval(tlist, float(time_unit_s))  # CallableCoeffUnits-like
         except TypeError:
-            return c.eval(tlist)  # CallableCoeff
-    raise TypeError("Unsupported coeff type")
+            y = c.eval(tlist)  # CallableCoeff-like
+        return np.asarray(y, dtype=complex).reshape(len(tlist))
+
+    if callable(c):
+        y = c(tlist)
+        return np.asarray(y, dtype=complex).reshape(len(tlist))
+
+    raise TypeError(f"Unsupported coeff type: {type(c)!r}")
 
 
 def effective_op_at(
-    term: CompiledTermDense,
-    tlist: np.ndarray,
-    index: int,
-    *,
-    time_unit_s: float,
+    term: CompiledTermDense, tlist: np.ndarray, index: int, *, time_unit_s: float
 ) -> np.ndarray:
-    """
-    Effective operator at a specific solver time index.
-
-    O_eff(t_i) = coeff(t_i) * op
-    """
-    coeff = eval_coeff(term, tlist, time_unit_s=time_unit_s)[int(index)]
-    return complex(coeff) * np.asarray(term.op, dtype=complex)
+    coeff_i = eval_coeff(term, tlist, time_unit_s=time_unit_s)[int(index)]
+    return complex(coeff_i) * np.asarray(term.op, dtype=complex)

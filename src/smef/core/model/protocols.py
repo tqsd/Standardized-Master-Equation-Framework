@@ -12,9 +12,16 @@ from typing import (
     TYPE_CHECKING,
 )
 
-from smef.core.drives.protocols import DriveDecoderProto, DriveTermEmitterProto
+from smef.core.drives.protocols import (
+    DriveDecodeContextProto,
+    DriveDecoderProto,
+    DriveStrengthModelProto,
+    DriveTermEmitterProto,
+)
 from smef.core.ir.protocols import OpMaterializeContextProto
 import numpy as np
+
+from smef.core.units import UnitSystem
 
 if TYPE_CHECKING:
     from smef.core.types import DriveCoefficients, ResolvedDrive
@@ -65,33 +72,6 @@ class TermCatalogProto(Protocol):
     def all_terms(self) -> Sequence["Term"]: ...
 
 
-@runtime_checkable
-class DriveDecodeContextProto(Protocol):
-    """
-    Passive adapter bundle used by the pipeline to interpret user drives.
-    """
-
-    # Keep empty for now; later add minimal required properties, e.g.
-    # transition_space, polarization_space, phonon_space
-    pass
-
-
-@runtime_checkable
-class DriveStrengthModelProto(Protocol):
-    """
-    Converts resolved drives into time-series coefficients in solver units.
-    """
-
-    def compute_drive_coeffs(
-        self,
-        resolved: Sequence["ResolvedDrive"],
-        tlist: np.ndarray,
-        *,
-        time_unit_s: float,
-        decode_ctx: Optional[DriveDecodeContextProto] = None,
-    ) -> "DriveCoefficients": ...
-
-
 @dataclass(frozen=True)
 class CompileBundle:
     # required
@@ -126,7 +106,7 @@ class MaterializeBundle:
 
 @runtime_checkable
 class CompilableModelProto(Protocol):
-    def compile_bundle(self) -> CompileBundle:
+    def compile_bundle(self, *, units: UnitSystem) -> CompileBundle:
         """Lazy. Should be cheap to construct."""
         ...
 

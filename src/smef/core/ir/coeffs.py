@@ -55,13 +55,37 @@ def scale_coeff(coeff: Optional[CoeffProto], factor: complex) -> CoeffProto:
     return CallableCoeff(_fn)
 
 
-def eval_maybe_coeff(coeff: Any, tlist: np.ndarray) -> np.ndarray:
+def _eval_coeff_maybe(
+    coeff: Any, tlist: np.ndarray, *, time_unit_s: float
+) -> np.ndarray:
     if coeff is None:
         out = np.empty(len(tlist), dtype=complex)
         out[:] = 1.0 + 0.0j
         return out
+
     if hasattr(coeff, "eval"):
-        return coeff.eval(tlist)
-    # allow raw callables (tlist -> array)
+        try:
+            return coeff.eval(tlist, float(time_unit_s))
+        except TypeError:
+            return coeff.eval(tlist)
+
+    y = coeff(tlist)
+    return np.asarray(y, dtype=complex).reshape(len(tlist))
+
+
+def eval_coeff_any(coeff: Any, tlist: np.ndarray, *, time_unit_s: float) -> np.ndarray:
+    if coeff is None:
+        out = np.empty(len(tlist), dtype=complex)
+        out[:] = 1.0 + 0.0j
+        return out
+
+    if hasattr(coeff, "eval"):
+        try:
+            return np.asarray(
+                coeff.eval(tlist, float(time_unit_s)), dtype=complex
+            ).reshape(len(tlist))
+        except TypeError:
+            return np.asarray(coeff.eval(tlist), dtype=complex).reshape(len(tlist))
+
     y = coeff(tlist)
     return np.asarray(y, dtype=complex).reshape(len(tlist))

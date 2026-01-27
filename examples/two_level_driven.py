@@ -8,16 +8,22 @@ import matplotlib.pyplot as plt
 
 from smef.core.ir.ops import OpExpr, SymbolOp
 from smef.core.ir.terms import Term, TermKind
-from smef.core.ir.coeffs import CallableCoeff, ConstCoeff
+from smef.core.ir.coeffs import CallableCoeffUnits, ConstCoeff
+from smef.core.ir.protocols import OpMaterializeContextProto
 from smef.core.model.protocols import (
     CompileBundle,
     CompilableModelProto,
     MaterializeBundle,
     ModeRegistryProto,
-    OpMaterializeContextProto,
     TermCatalogProto,
 )
+from smef.core.units import Q, UnitSystem
 from smef.engine import SimulationEngine
+
+
+# ----------------------------
+# Minimal helpers / catalogs
+# ----------------------------
 
 
 @dataclass(frozen=True)
@@ -31,9 +37,6 @@ class FrozenCatalog(TermCatalogProto):
 
 @dataclass(frozen=True)
 class TLSModes(ModeRegistryProto):
-    def num_modes(self) -> int:
-        return 1
-
     def dims(self) -> Sequence[int]:
         return (2,)
 
@@ -56,10 +59,10 @@ class TLSMaterializer(OpMaterializeContextProto):
         # basis: |g> = [1,0], |e> = [0,1]
         proj_g = np.array([[1.0, 0.0], [0.0, 0.0]], dtype=complex)
         proj_e = np.array([[0.0, 0.0], [0.0, 1.0]], dtype=complex)
-        sigma_plus = np.array([[0.0, 0.0], [1.0, 0.0]],
-                              dtype=complex)  # |e><g|
-        sigma_minus = np.array([[0.0, 1.0], [0.0, 0.0]],
-                               dtype=complex)  # |g><e|
+
+        # sigma_plus = |e><g|, sigma_minus = |g><e|
+        sigma_plus = np.array([[0.0, 0.0], [1.0, 0.0]], dtype=complex)
+        sigma_minus = np.array([[0.0, 1.0], [0.0, 0.0]], dtype=complex)
         sigma_x = sigma_plus + sigma_minus
 
         if symbol == "proj_g":
@@ -79,114 +82,167 @@ class TLSMaterializer(OpMaterializeContextProto):
         raise NotImplementedError("Not needed for this 1-mode example")
 
 
-@dataclass(frozen=True)
-class DrivenTLSModel(CompilableModelProto):
-    delta: float  # detuning in rad/s (physical)
-    omega_rabi: float  # drive amplitude in rad/s (physical)
-    t0_s: float
-    sigma_s: float
-    time_unit_s: float
+# ----------------------------
+# Unitful driven TLS model
+# ----------------------------
 
-    def compile_bundle(self) -> CompileBundle:
+
+@dataclass(frozen=True)
+class UnitfulDrivenTLS(CompilableModelProto):
+    """
+    Two-level system with:
+    - detuning term: (delta/2) * |e><e|
+    - gaussian drive: (Omega(t)/2) * sigma_x
+    - decay collapse: sqrt(gamma) * sigma_minus   (Lindblad)
+    All parameters are unitful and lowered via UnitSystem at compile time.
+    """
+
+    # unitful inputs (pint quantities)
+    delta: Any  # rad/s
+    omega_rabi: Any  # rad/s (peak)
+    gamma: Any  # 1/s
+
+    t0: Any  # s
+    sigma: Any  # s
+
+    def compile_bundle(self, *, units: UnitSystem) -> CompileBundle:
         modes = TLSModes()
 
-        # Static detuning term: H0 = (delta/2) * |e><e|  (simple choice)
+        # ---- Static Hamiltonian (solver units) ----
+        # H_det = (delta/2) * |e><e|
+        delta_solver = units.omega_to_solver(self.delta)  # dimensionless
         H_det = Term(
             kind=TermKind.H,
             op=OpExpr.atom(SymbolOp("proj_e")),
-            coeff=ConstCoeff(0.5 * self.delta),
+            coeff=ConstCoeff(0.5 * complex(delta_solver)),
             label="H_det",
+            meta={"delta": str(self.delta)},
         )
 
-        # Drive term: H_drive(t) = (Omega(t)/2) * sigma_x
-        # Here we use a Gaussian envelope. You can swap this to sin/cos easily.
-        def omega_t(t_s: float) -> complex:
-            x = (t_s - self.t0_s) / self.sigma_s
-            return complex(self.omega_rabi * np.exp(-0.5 * x * x))
+        # ---- Drive Hamiltonian coefficient (solver units) ----
+        # Drive coefficient should return Omega_solver(t_solver).
+        # We implement it as unit-aware coeff: it receives time_unit_s and can map
+        # t_solver -> t_s internally.
+        t0_s = (
+            float(Q(self.t0, "s").magnitude)
+            if hasattr(self.t0, "to")
+            else float(self.t0)
+        )
+        sigma_s = (
+            float(Q(self.sigma, "s").magnitude)
+            if hasattr(self.sigma, "to")
+            else float(self.sigma)
+        )
 
-        # CallableCoeff should interpret its input "t" as solver time; we convert via time_unit_s in engine.
-        # If your CallableCoeff already expects solver time, then define omega over solver time.
-        # We'll do solver-time here and convert inside with time_unit_s below using the same formula but t_s = t*time_unit_s.
-        def omega_solver(t_solver: np.ndarray) -> np.ndarray:
-            t_s = np.asarray(t_solver, dtype=float) * self.time_unit_s
-            x = (t_s - self.t0_s) / self.sigma_s
-            return (self.omega_rabi * np.exp(-0.5 * x * x)).astype(complex)
+        # We'll convert the peak Omega to solver units once, so the function returns solver values directly.
+        omega0_solver = units.omega_to_solver(self.omega_rabi)  # dimensionless
+
+        def omega_solver(t_solver: np.ndarray, time_unit_s: float) -> np.ndarray:
+            t_s = np.asarray(t_solver, dtype=float) * float(time_unit_s)
+            x = (t_s - t0_s) / sigma_s
+            y = omega0_solver * np.exp(-0.5 * x * x)
+            return np.asarray(y, dtype=complex).reshape(len(t_solver))
 
         H_drive = Term(
             kind=TermKind.H,
             op=OpExpr.atom(SymbolOp("sigma_x")),
-            coeff=CallableCoeff(omega_solver),
-            label="H_drive",
+            coeff=CallableCoeffUnits(omega_solver),
+            label="H_drive_gauss",
+            meta={
+                "omega_rabi": str(self.omega_rabi),
+                "t0": str(self.t0),
+                "sigma": str(self.sigma),
+            },
+        )
+
+        # ---- Collapse (solver units) ----
+        # Collapse operator for spontaneous emission: sqrt(gamma_solver) * sigma_minus
+        gamma_solver = units.rate_to_solver(self.gamma)  # dimensionless
+        c_pref = np.sqrt(float(gamma_solver))
+
+        C_decay = Term(
+            kind=TermKind.C,
+            # Put sqrt(gamma) into the operator via OpExpr.scale
+            op=OpExpr.scale(complex(c_pref), OpExpr.atom(
+                SymbolOp("sigma_minus"))),
+            coeff=None,  # constant 1
+            label="C_decay",
+            meta={"gamma": str(self.gamma)},
         )
 
         ham = FrozenCatalog((H_det, H_drive))
-        return CompileBundle(modes=modes, hamiltonian=ham)
+        col = FrozenCatalog((C_decay,))
+        return CompileBundle(modes=modes, hamiltonian=ham, collapse=col)
 
     def materialize_bundle(self) -> MaterializeBundle:
         return MaterializeBundle(ops=TLSMaterializer())
 
 
 def main() -> None:
-    # Physical parameters
-    delta = 0.0  # rad/s
-    omega_rabi = 2.0  # rad/s (peak)
-    time_unit_s = 1.0  # solver time unit in seconds
+    # Pick a solver time unit: 1 solver unit = 1 ps
+    time_unit_s = float(Q(1.0, "ps").to("s").magnitude)
 
-    # Pulse params in seconds
-    t0_s = 5.0
-    sigma_s = 1.0
+    # Unitful parameters
+    delta = Q(0.0, "rad/s")
+    # large so you see oscillations on ps scale
+    omega_rabi = Q(2.0e11, "rad/s")
+    gamma = Q(1.0e10, "1/s")  # decay rate
 
-    model = DrivenTLSModel(
+    # Pulse parameters
+    t0 = Q(5.0, "ps")
+    sigma = Q(1.0, "ps")
+
+    model = UnitfulDrivenTLS(
         delta=delta,
         omega_rabi=omega_rabi,
-        t0_s=t0_s,
-        sigma_s=sigma_s,
-        time_unit_s=time_unit_s,
+        gamma=gamma,
+        t0=t0,
+        sigma=sigma,
     )
 
-    # Solver time grid (unitless)
+    # Solver grid in solver units (unitless)
     tlist = np.linspace(0.0, 10.0, 1200)
 
-    # Initial state: excited, so you can see both driven dynamics and (if you add decay) relaxation
+    # Initial state: excited
     rho0 = np.array([[0.0, 0.0], [0.0, 1.0]], dtype=complex)
 
-    engine = SimulationEngine(audit=False)
+    engine = SimulationEngine(audit=True)
 
-    # Add observable: P_e = <proj_e>
-    # Easiest: just include it as an observable catalog in the model for now.
-    # If your pipeline supports passing observables separately, use that.
-    # For minimalism, we hack it by compiling once, then injecting e_terms would be messy,
-    # so instead just compute from states below.
     res = engine.run(
         model,
         tlist=tlist,
         time_unit_s=time_unit_s,
         rho0=rho0,
+        drives=None,
         solve_options={"progress_bar": "tqdm"},
     )
 
-    # Compute P_e(t) from states (density matrices)
-    # QuTiP returns Qobj states; support both Qobj and ndarray-like.
+    # Observable: P_e = Tr(|e><e| rho)
     proj_e = np.array([[0.0, 0.0], [0.0, 1.0]], dtype=complex)
 
-    pe = []
     if res.states is None:
         raise RuntimeError(
-            "No states returned; enable states in adapter if you disabled them."
+            "No states returned by adapter; enable state output in your adapter."
         )
-    for st in res.states:
+
+    pe = np.empty(len(res.tlist), dtype=float)
+    for i, st in enumerate(res.states):
         if hasattr(st, "full"):
             rho = np.asarray(st.full(), dtype=complex)
         else:
             rho = np.asarray(st, dtype=complex)
-        pe.append(float(np.real(np.trace(proj_e @ rho))))
-    pe = np.asarray(pe, dtype=float)
+        pe[i] = float(np.real(np.trace(proj_e @ rho)))
+
+    # Plot vs physical time in ps (for sanity)
+    t_ps = (np.asarray(res.tlist, dtype=float) * time_unit_s) / float(
+        Q(1.0, "ps").to("s").magnitude
+    )
 
     plt.figure()
-    plt.plot(res.tlist, pe)
-    plt.xlabel("t (solver units)")
+    plt.plot(t_ps, pe)
+    plt.xlabel("t (ps)")
     plt.ylabel("P_e")
-    plt.title("Driven two-level system")
+    plt.title("Unitful driven TLS with decay (SMEF)")
     plt.ylim(-0.05, 1.05)
     plt.grid(True)
     plt.show()
