@@ -67,6 +67,7 @@ def audit_problem_dense(
     - non-Hermitian Hamiltonian terms (optional)
     - coefficient ranges/areas, peaks
     """
+
     opt = options or AuditOptions()
     tlist = np.asarray(problem.tlist, dtype=float)
     dims = tuple(int(x) for x in problem.dims)
