@@ -49,6 +49,11 @@ class SimulationEngine:
             decode_ctx = getattr(bundle, "drive_decode", None)
             emitter = getattr(bundle, "drive_emitter", None)
 
+            if decode_ctx is not None and hasattr(decode_ctx, "with_solver_grid"):
+                decode_ctx = decode_ctx.with_solver_grid(
+                    tlist=tlist_f, time_unit_s=time_unit_s_f
+                )
+
             if decoder is None or strength is None or emitter is None:
                 raise ValueError(
                     "Drives provided but model must provide drive_decoder, drive_strength, and drive_emitter"

@@ -1,5 +1,5 @@
 from __future__ import annotations
-from typing import Any, Optional, Protocol, Sequence, runtime_checkable
+from typing import Optional, Protocol, Sequence, runtime_checkable
 import numpy as np
 from smef.core.drives.types import (
     DriveCoefficients,
@@ -29,7 +29,9 @@ class DriveDecodeContextProto(Protocol):
     through to the decoder/strength model.
     """
 
-    ...
+    def with_solver_grid(
+        self, *, tlist: np.ndarray, time_unit_s: float
+    ) -> DriveDecodeContextProto: ...
 
 
 @runtime_checkable
