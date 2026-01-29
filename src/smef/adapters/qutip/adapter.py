@@ -43,8 +43,7 @@ class QuTiPAdapter(SolverAdapterProto):
         tlist = np.asarray(problem.tlist, dtype=float)
 
         if problem.rho0 is None:
-            raise ValueError(
-                "MEProblemDense.rho0 is required for QuTiPAdapter")
+            raise ValueError("MEProblemDense.rho0 is required for QuTiPAdapter")
 
         dims = list(problem.dims)
         rho0 = self._toq(
@@ -58,19 +57,17 @@ class QuTiPAdapter(SolverAdapterProto):
         c_ops = self._build_collapse_ops(problem, qt)
         e_ops, e_keys = self._build_e_ops(problem, qt)
 
-        mesolve_options = dict(options.get(
-            "qutip_options", {}) if options else {})
+        mesolve_options: Dict[str, Any] = dict(
+            options.get("qutip_options", {}) if options else {}
+        )
         if options and "progress_bar" in options:
             mesolve_options["progress_bar"] = options["progress_bar"]
 
+        mesolve_options.setdefault("store_states", False)
+        mesolve_options.setdefault("store_final_state", True)
+
         res = qt.mesolve(
-            H,
-            rho0,
-            tlist,
-            c_ops,
-            e_ops=e_ops,
-            args=None,
-            options=mesolve_options if mesolve_options else None,
+            H, rho0, tlist, c_ops, e_ops=e_ops, args={}, options=mesolve_options
         )
 
         expect: Dict[str, np.ndarray] = {}
@@ -78,7 +75,11 @@ class QuTiPAdapter(SolverAdapterProto):
             for k, arr in zip(e_keys, res.expect):
                 expect[k] = np.asarray(arr)
 
-        states_out: Any = res.states if hasattr(res, "states") else None
+        final_qobj = getattr(res, "final_state", None)
+        states_out = None
+        if final_qobj is not None:
+            # final_qobj is a qutip.Qobj; .full() returns a dense np.ndarray
+            states_out = np.asarray(final_qobj.full(), dtype=complex)
 
         return MESolveResult(
             tlist=tlist,
@@ -115,8 +116,7 @@ class QuTiPAdapter(SolverAdapterProto):
                 H0 += complex(coeff[0]) * op
             else:
                 f = self._make_time_func(tlist, coeff)
-                H_td.append(
-                    [self._toq(qt, op, dims=dims, dtype=self.op_dtype), f])
+                H_td.append([self._toq(qt, op, dims=dims, dtype=self.op_dtype), f])
 
         if H_td:
             return [self._toq(qt, H0, dims=dims, dtype=self.op_dtype)] + H_td
@@ -139,8 +139,7 @@ class QuTiPAdapter(SolverAdapterProto):
                 )
             else:
                 f = self._make_time_func(tlist, coeff)
-                c_ops.append(
-                    [self._toq(qt, op, dims=dims, dtype=self.op_dtype), f])
+                c_ops.append([self._toq(qt, op, dims=dims, dtype=self.op_dtype), f])
 
         return c_ops
 
